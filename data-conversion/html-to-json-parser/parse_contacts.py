@@ -2,99 +2,122 @@
 # File:      data-conversion/html-to-json-parser/parse_contacts.py
 # Purpose:   Parses an HTML file to extract contact data and convert it to JSON.
 # Author:    MTORUN0X7CD
-# Version:   2.0
-# Last Modified: 2025-07-26
+# Version:   3.1
+# Last Modified: 2025-07-27
 #
 # ===================================================================
 
+import argparse
 import json
-from html.parser import HTMLParser
+import sys
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Dict, List, Sequence
 
-# --- Configuration ---
-INPUT_HTML_FILE: Path = Path("Kontakte.html")
-OUTPUT_JSON_FILE: Path = Path("contacts.json")
+from bs4 import BeautifulSoup, Tag
 
 
-class ContactParser(HTMLParser):
+def parse_arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    """Parses command-line arguments."""
+    parser = argparse.ArgumentParser(
+        description="Parse an HTML file containing a table of contacts into a structured JSON file."
+    )
+    parser.add_argument(
+        "input_file",
+        type=Path,
+        help="Path to the source HTML file (e.g., 'Kontakte.html').",
+    )
+    parser.add_argument(
+        "-o",
+        "--output",
+        type=Path,
+        default=Path("contacts.json"),
+        help="Path to the destination JSON file (default: 'contacts.json').",
+    )
+    return parser.parse_args(argv)
+
+
+def extract_contacts_from_html(html_content: str) -> List[Dict[str, str]]:
     """
-    A custom HTML parser to extract contact data from table rows.
-    It specifically looks for <tr> tags and captures the data within
-    the subsequent three <td> tags.
+    Extracts contact data from an HTML string using a robust, scoped search.
+
+    This improved version first finds the primary '<table>' element and only
+    then searches for rows within it, preventing data contamination from
+    other tables in the document.
     """
+    soup = BeautifulSoup(html_content, "html.parser")
+    contacts: List[Dict[str, str]] = []
 
-    def __init__(self) -> None:
-        super().__init__()
-        self.contacts: List[Dict[str, str]] = []
-        self._in_tr: bool = False
-        self._in_td: bool = False
-        self._current_contact_data: List[str] = []
-        self._td_count: int = 0
+    # Step 1: Isolate the main data table. Assumes the first table is the correct one.
+    contact_table = soup.find("table")
+    if not isinstance(contact_table, Tag):
+        # This handles the case where no table is found in the document.
+        return []
 
-    def handle_starttag(self, tag: str, attrs: Any) -> None:
-        if tag == "tr":
-            self._in_tr = True
-            self._current_contact_data = []
-            self._td_count = 0
-        elif self._in_tr and tag == "td":
-            self._in_td = True
+    # Step 2: Iterate through all rows '<tr>' within the isolated table.
+    for row in contact_table.find_all("tr"):
+        # Find all data cells '<td>' within the current row.
+        # This is more specific than searching the whole document.
+        cells = row.find_all("td")
 
-    def handle_endtag(self, tag: str) -> None:
-        if tag == "tr":
-            self._in_tr = False
-            if len(self._current_contact_data) == 3:
-                contact_dict = {
-                    "alias": self._current_contact_data[0],
-                    "name": self._current_contact_data[1],
-                    "phone": self._current_contact_data[2],
-                }
-                self.contacts.append(contact_dict)
-        elif tag == "td":
-            self._in_td = False
-            self._td_count += 1
+        # Ensure the row has the expected number of columns (3).
+        if len(cells) == 3:
+            # .get_text(strip=True) cleanly extracts and strips whitespace from data.
+            alias = cells[0].get_text(strip=True)
+            name = cells[1].get_text(strip=True)
+            phone = cells[2].get_text(strip=True)
 
-    def handle_data(self, data: str) -> None:
-        if self._in_td and self._td_count < 3:
-            clean_data = data.strip()
-            if clean_data:
-                self._current_contact_data.append(clean_data)
+            # Add the contact only if all key fields contain data.
+            if alias and name and phone:
+                contacts.append({"alias": alias, "name": name, "phone": phone})
+
+    return contacts
 
 
-def main() -> None:
+def main(argv: Sequence[str] | None = None) -> int:
     """
-    Main function to read the HTML, parse it, and write the JSON output.
+    Main function to orchestrate reading, parsing, and writing.
+    Returns an exit code (0 for success, 1 for failure).
     """
-    print(f"-> Reading input file: '{INPUT_HTML_FILE}'")
-    if not INPUT_HTML_FILE.exists():
-        print(f"\nError: Input file '{INPUT_HTML_FILE}' not found.")
-        print("Please place it in the same directory as this script.")
-        return
+    args = parse_arguments(argv)
 
+    if not args.input_file.exists():
+        print(f"Error: Input file '{args.input_file}' not found.", file=sys.stderr)
+        return 1
+
+    print(f"-> Reading input file: '{args.input_file}'")
     try:
-        html_content = INPUT_HTML_FILE.read_text(encoding="utf-8")
-    except Exception as e:
-        print(f"\nError reading file: {e}")
-        return
+        html_content = args.input_file.read_text(encoding="utf-8")
+    except (IOError, PermissionError) as e:
+        print(f"Error reading file: {e}", file=sys.stderr)
+        return 1
 
-    print("-> Parsing HTML content...")
-    parser = ContactParser()
-    parser.feed(html_content)
-    contacts_data = parser.contacts
+    print("-> Parsing HTML content with scoped search...")
+    contacts_data = extract_contacts_from_html(html_content)
 
     if not contacts_data:
-        print("\nWarning: No contact data was found in the HTML file.")
-        return
+        print(
+            "Warning: No contacts found or table could not be parsed.", file=sys.stderr
+        )
+        return 1
 
-    print(f"-> Found {len(contacts_data)} contacts.")
-    print(f"-> Writing to output file: '{OUTPUT_JSON_FILE}'")
+    num_contacts = len(contacts_data)
+    print(f"-> Found {num_contacts} contact{'s' if num_contacts != 1 else ''}.")
+    print(f"-> Writing to output file: '{args.output}'")
+
     try:
-        with OUTPUT_JSON_FILE.open("w", encoding="utf-8") as f:
+        # Ensure the output directory exists before writing.
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        with args.output.open("w", encoding="utf-8") as f:
             json.dump(contacts_data, f, indent=2, ensure_ascii=False)
-        print(f"\nSuccess: '{OUTPUT_JSON_FILE}' has been created successfully.")
-    except Exception as e:
-        print(f"\nError writing JSON file: {e}")
+        print(f"\nSuccess: '{args.output}' has been created successfully.")
+    except (IOError, PermissionError) as e:
+        print(f"Error writing JSON file: {e}", file=sys.stderr)
+        return 1
+
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    # Pass command-line arguments (excluding the script name) to main.
+    # This makes the script's logic testable.
+    sys.exit(main(sys.argv[1:]))

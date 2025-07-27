@@ -1,3 +1,6 @@
-# This script has no external dependencies.
-# All required libraries (json, html.parser, pathlib) are part of the
-# Python Standard Library.
+#
+# File:      data-conversion/html-to-json-parser/requirements.txt
+# Purpose:   Defines Python package dependencies for the parser script.
+# ===================================================================
+
+beautifulsoup4
